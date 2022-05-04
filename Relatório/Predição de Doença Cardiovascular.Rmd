@@ -1,0 +1,441 @@
+---
+title: "Análise de MLG"
+author: "Matheus Borges"
+date: "14/02/2022"
+lang: "pt-br"
+output:
+  html_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+# Opções globais dos chunks
+knitr::opts_chunk$set(echo = TRUE, fig.align = "center")
+
+
+# Pacotes muito usados
+library(dplyr)
+library(ggplot2)
+
+
+# Funções para os plots
+plot_hist <- function(dados, x, binwidth, title, xlab, ylab){
+  ggplot(dados, aes(x = {{x}})) +
+    geom_histogram(color = "black", fill = "dark blue",
+                   binwidth = binwidth) +
+    labs(title = title,
+         x = xlab, y = ylab)
+}
+
+plot_box <- function(dados, x, y, title, ylab){
+  ggplot(dados, aes(x = {{x}}, y = {{y}})) +
+    geom_boxplot() +
+    labs(title = title, x = "DCV", y = ylab)
+}
+
+plot_bar <- function(dados, x, fill, title, xlab){
+  ggplot(dados, aes(x = {{x}}, fill = {{fill}})) +
+    geom_bar(color = "black", position = "dodge") +
+    labs(title = title, x = xlab, y = "Frequência", fill = "DCV") +
+    theme(legend.position = "bottom")
+}
+
+plot_cook <- function(modelo, dados){
+  df_cook <- data.frame(cooks.distance(modelo), 1:nrow(dados))
+  colnames(df_cook) <- c("cook", "obs")
+  limite_cook <- 4/(nrow(dados) - modelo$rank)
+
+  plot <- ggplot(df_cook, aes(x = obs, y = cook)) +
+    geom_point(aes(color = cook > limite_cook)) +
+    geom_hline(yintercept = limite_cook,
+               linetype = "dashed", color = "red") +
+    labs(x = "Observações", y = "Distância de Cook",
+         title = "Distância de Cook") +
+    theme_legend() +
+    scale_colour_manual(values = c("black", "red"))
+
+  outliers <- df_cook %>%
+    filter(cook >= 1.5 * limite_cook) %>%
+    select(obs)
+
+  return <- list("plot" = plot, "outliers" = outliers)
+  return(return)
+}
+
+plot_hat <- function(modelo, dados){
+  df_hat <- data.frame(hatvalues(modelo), 1:nrow(dados))
+  colnames(df_hat) <- c("hat", "obs")
+  limite_hat <- 3 * (modelo$rank/nrow(dados))
+
+  plot <- ggplot(df_hat, aes(x = obs, y = hat)) +
+    geom_point(aes(color = hat > limite_hat)) +
+    geom_hline(yintercept = limite_hat,
+               linetype = "dashed", color = "red") +
+    labs(x = "Observações", y = "Alavancagem",
+         title = "Alavancagem") +
+    theme_legend() +
+    scale_colour_manual(values = c("black", "red"))
+
+  outliers <- df_hat %>%
+    filter(hat >= 1.5 * limite_hat) %>%
+    select(obs)
+
+  return <- list("plot" = plot, "outliers" = outliers)
+  return(return)
+}
+
+plot_res <- function(modelo, dados){
+  res <- residuals(modelo, type = "deviance")
+  fi <- summary(modelo)$dispersion
+  h <- hatvalues(modelo)
+  res <- res * sqrt(fi/(1 - h))
+  res <- data.frame(res, 1:nrow(dados))
+  colnames(res) <- c("res", "obs")
+
+  plot <- ggplot(res, aes(x = obs, y = res)) +
+    geom_point() +
+    geom_hline(yintercept = -3, linetype = "dashed", color = "red") +
+    geom_hline(yintercept = 3, linetype = "dashed", color = "red") +
+    labs(x = "Observações", y = "Resíduos",
+         title = "Resíduos Deviance") +
+    theme_legend()
+}
+
+plot_qq <- function(modelo){
+  envelope <- with(hnp::hnp(modelo, resid.type = "deviance",
+                            halfnormal = FALSE, plot.sim = FALSE),
+                   data.frame(x, lower, upper, median, residuals))
+
+  plot <- ggplot(envelope, aes(x)) +
+    geom_point(aes(y = residuals), size = 0.8) +
+    geom_line(aes(y = lower)) +
+    geom_line(aes(y = upper)) +
+    geom_line(aes(y = median), linetype = "dashed") +
+    labs(x = "Percentil", y = "Resíduos",
+         title = "Envelope Simulado") +
+    theme_legend()
+}
+
+plot_grid <- function(plot1, plot2, ncol = 2){
+  gridExtra::grid.arrange(plot1, plot2, ncol = ncol)
+}
+
+# Matriz de Confusão
+confusion <- function(observado, modelo, threshold, teste = NULL){
+  observado <- as.factor(observado)
+  predict <- predict(modelo, newdata = teste, type = "response")
+  predict <- as.factor(ifelse(predict > threshold, 1, 0))
+  confusion <- caret::confusionMatrix(data = predict, reference = observado)
+  return(confusion)
+}
+
+# Chances dos preditores
+chances <- function(modelo, regressores){
+  coeficientes <- modelo$coefficients
+  coeficientes <- sapply(coeficientes, function(x){round(exp(x), 2)})
+  
+  df <- as.data.frame(coeficientes) %>% 
+    slice(-1)
+  
+  colnames(df) <- "Chances"
+  rownames(df) <- regressores
+  
+  return(df)
+}
+
+
+# Temas
+theme_custom <- function(){
+  theme_minimal() %+replace%
+    theme(plot.title = element_text(hjust = 0.5))
+}
+
+theme_legend <- function(){
+  theme_minimal() %+replace%
+    theme(plot.title = element_text(hjust = 0.5),
+          legend.position = "none")
+}
+
+
+# Tema global
+theme_set(theme_custom())
+```
+
+\setlength\parindent{24pt}
+
+# Introdução e Objetivo
+
+No seguinte relatório, é feita uma análise estatística de um banco de dados (que foi gerado por uma junção de cinco bancos distintos) contendo informações sobre doenças cardiovasculares (DCV) e possíveis regressores - isto é, variáveis que explicam a variável resposta de doença cardiovascular -, a fim de obter um modelo de regressão logística capaz de fazer predições sobre a chance de indivíduos apresentarem DCVs. O modelo obtido no final deste relatório é interpretado como uma ferramenta de prevenção para DCVs, isto é, ele não é capaz de definir se um indivíduo de fato tem alguma doença, mas sim se ele tem altas chances de ter alguma doença.
+
+
+# Importação e Visualização dos Dados
+
+Primeiro, visualizamos brevemente algumas variáveis contidas nos dados para nos familiarizarmos com os mesmos. Além disso, estamos em busca de valores `NA`, ou então impossíveis com base na realidade.
+
+```{r, warning=FALSE, message=FALSE}
+# Importação dos dados
+dados <- readr::read_csv("../Dados/heart.csv")
+
+
+# Busca por dados faltantes
+sapply(dados, function(x) {sum(is.na(x))})
+
+plot_hist(dados, x = Cholesterol, binwidth = 30,
+          title = "Histograma de Colesterol",
+          xlab = "Colesterol", ylab = "Frequência") +
+  geom_text(data = subset(dados, Cholesterol == 0),
+            stat = "count", aes(label = ..count..),
+            vjust = -1)
+
+plot_hist(dados, x = RestingBP, binwidth = 20,
+          title = "Histograma de Pressão Arterial",
+          xlab = "Pressão Arterial em Repouso",
+          y = "Frequência") +
+  geom_text(data = subset(dados, RestingBP == 0),
+            stat = "count", aes(label = ..count..),
+            vjust = -1)
+
+plot_hist(dados, x = Oldpeak, binwidth = 0.5,
+          title = "Histograma de Oldpeak",
+          xlab = "Oldpeak", ylab = "Frequência")
+```
+
+Percebe-se que, apesar de não serem reportados valores faltantes, existem valores que não têm sentido com a realidade: como colesterol ou batimentos cardíacos em repouso iguais a $0$. Dessa forma, devemos buscar alguma forma de preencher esses dados faltantes de forma que não altere a distribuição dos mesmos, visando assim manter a integridade das informações.
+
+# Manipulação dos Dados
+Começaremos alterando a classe de algumas variáveis, processo importante para a geração de um modelo de predição para a variável resposta no final. Além disso, faremos a estimação dos valores considerados anteriormente como impossíveis por meio da técnica dos K-Vizinhos mais Próximos (KNN), que consiste em associar valores a variáveis com base no comportamento das outras variáveis da mesma observação.
+
+Essa tentativa é de muita importância, visto que a simples exclusão dessas observações do banco de dados acarretaria em uma perda de $20\%$ dos dados e, assim, não somente a informação contida nas variáveis com dados faltantes estaria perdida, como também a informação contida em todas as outras variáveis.
+
+```{r, warning=FALSE, }
+# Manipulação dos dados e alteração de classes de variáveis
+dados_limpo <- filter(dados, RestingBP != 0)
+dados_limpo$HeartDisease <- as.factor(dados_limpo$HeartDisease)
+dados_limpo$FastingBS <- as.factor(dados_limpo$FastingBS)
+dados_limpo$Cholesterol[dados_limpo$Cholesterol == 0] <- NA
+dados_limpo$Oldpeak[dados_limpo$Oldpeak < 0] <- NA
+
+dados_limpo <- dados_limpo %>%
+  mutate(ST_Slope = ifelse(ST_Slope == "Down",
+                           "Declive", ST_Slope)) %>%
+  mutate(ST_Slope = ifelse(ST_Slope == "Flat",
+                           "Plano", ST_Slope)) %>%
+  mutate(ST_Slope = ifelse(ST_Slope == "Up",
+                           "Aclive", ST_Slope)) %>%
+  mutate(ExerciseAngina = ifelse(ExerciseAngina == "Y",
+                                 1, 0))
+
+dados_limpo$ExerciseAngina <- as.factor(dados_limpo$ExerciseAngina)
+
+
+# Método KNN
+dados_knn <- as_tibble(VIM::kNN(dados_limpo,
+                                variable = c("Cholesterol", "Oldpeak"),
+                                k = 3)) %>%
+  select(-Cholesterol_imp, -Oldpeak_imp)
+
+
+# Geração de gráficos para comparação dos dados imputados e os dados originais
+plot_chol <- plot_hist(dados_limpo, x = Cholesterol, binwidth = 30,
+          title = "Histograma de Colesterol",
+          xlab = "Colesterol", ylab = "Frequência")
+
+plot_oldp <- plot_hist(dados_limpo, x = Oldpeak, binwidth = 0.5,
+          title = "Histograma de Oldpeak",
+          xlab = "Oldpeak", ylab = "Frequência")
+
+plot_chol_knn <- plot_hist(dados_knn, x = Cholesterol, binwidth = 30,
+          title = "Histograma de Colesterol (KNN)",
+          xlab = "Colesterol", ylab = "Frequência")
+
+
+plot_oldp_knn <- plot_hist(dados_knn, x = Oldpeak, binwidth = 0.5,
+          title = "Histograma de Oldpeak (KNN)",
+          xlab = "Oldpeak", y = "Frequência")
+
+plot_grid(plot_chol, plot_chol_knn)
+plot_grid(plot_oldp, plot_oldp_knn)
+```
+
+Em relação aos dados da variável `Oldpeak`, a distribuição dos dados parece ser idêntica. Já sobre os dados da variável referente ao colesterol dos indivíduos, percebe-se que há um maior acúmulo de observações em torno da média dos dados, porém não parece haver algum tipo de pico ou achatamento exagerado na distribuição dos dados e, aliado ao fato de que as médias, medianas e desvios-padrão estão bastante similares, foi considerado que o método KNN é uma forma efetiva de estimar valores para os dados faltantes sem alterar a natureza dos dados. Dessa forma, a partir de agora o banco de dados trabalhado será aquele com a estimação dos dados gerados pelo método KNN.
+
+# Visualização dos Dados
+
+Agora que temos apenas dados congruentes com a realidade, podemos finalmente fazer uma visualização completa dos gráficos de todas as variáveis do banco, buscando especialmente a relação com a variável resposta de doenças cardiovasculares.
+
+```{r}
+box_age <- plot_box(dados_knn, x = HeartDisease, y = Age,
+                    title = "Boxplot de Idade", ylab = "Idade")
+
+box_bp <- plot_box(dados_knn, x = HeartDisease, y = RestingBP,
+                   title = "Boxplot de Pressão Arterial",
+                   ylab = "Pressão Arterial em Repouso")
+
+box_chol <- plot_box(dados_knn, x = HeartDisease, y = Cholesterol,
+                     title = "Boxplot de Colesterol", ylab = "Colesterol")
+
+box_HR <- plot_box(dados_knn, x = HeartDisease, y = MaxHR,
+                   title = "Boxplot de Batimentos Cardíacos",
+                   ylab = "Batimento Cardíaco Máximo")
+
+box_oldp <- plot_box(dados_knn, x = HeartDisease, y = Oldpeak,
+                     title = "Boxplot de Oldpeak", ylab = "Oldpeak")
+
+bar_sex <- plot_bar(dados_knn, x = Sex, fill = HeartDisease,
+                    title = "Sexo e DCV", xlab = "Sexo")
+
+bar_chest <- plot_bar(dados_knn, x = ChestPainType, fill = HeartDisease,
+                      title = "Dor no Peito e DCV", 
+                      xlab = "Tipo de Dor no Peito")
+
+bar_BS <- plot_bar(dados_knn, x = FastingBS, fill = HeartDisease,
+                   title = "Glicose e DCV", xlab = "Glicose")
+
+bar_ECG <- plot_bar(dados_knn, x = RestingECG, fill = HeartDisease,
+                    title = "Eletrocardiograma e DCV",
+                    xlab = "Eletrocardiograma em Repouso")
+
+bar_angina <- plot_bar(dados_knn, x = ExerciseAngina, fill = HeartDisease,
+                       title = "Angina e DCV", xlab = "Angina por Exercício")
+
+bar_ST <- plot_bar(dados_knn, x = ST_Slope, fill = HeartDisease,
+                   title = "Segmento ST e DCV", xlab = "Segmento ST")
+
+plot_grid(box_age, box_bp)
+plot_grid(box_chol, box_oldp)
+box_HR
+plot_grid(bar_angina, bar_BS)
+plot_grid(bar_ECG, bar_ST)
+plot_grid(bar_chest, bar_sex)
+```
+
+Primeiramente, vemos que há uma correlação positiva entre ambas as variáveis idade e oldpeak com a variável resposta, enquanto as demais variáveis numéricas não parecem apresentar algum tipo de relação óbvia, com exceção da variável de batimentos cardíacos máximos, que apresenta uma correlação negativa. Dessa forma, dentre as variáveis numéricas, essas parecem ser as mais importantes para a predição de doenças cardiovasculares. De contrário a uma possível expectativa usual, a variável colesterol não parece ter influência sobre a prevalência de doenças cardiovasculares, algo que pode ser factual ou uma falsa correlação neutra, dado que boa parte dos dados que trabalhei para essa variável são estimados. A solução mais concreta para essa dúvida seria uma reamostragem desses dados com mais informações observadas para essa variável.
+
+Sobre as variáveis em fatores, percebe-se que há algumas correlações interessantes. Aqui, por brevidade, não explicarei cada variável a fundo, visto que todas são da área da saúde e podem ser de difícil entendimento, porém comentarei sobre as mais relevantes. Primeiro, se um indivíduo tem experiências de angina ao se exercitar, ele aparenta ter mais chances de ter alguma doença, assim como se ele tem uma glicose em jejum acima de 120, o resultado da variável dicotômica de glicose. Sobre os resultados do exame de eletrocardiograma, percebe-se que alterações no segmento de onda ST podem indicar algum tipo de doença e, no gráfico referente ao próprio segmento ST, percebe-se que movimentos de aclive apresentam pouca chance, enquanto movimento de declive ou manter-se plano apresenta uma chance muito alta de doenças cardiovasculares em um indivíduo. Essas duas variáveis, por falarem sobre a mesma coisa, possivelmente possuem autocorrelação e, portanto, sem dúvidas uma será omitida na modelagem feita a seguir. Por fim, podemos ver que a variável do tipo de dor no peito em indivíduos apresenta maior correlação com doenças cardiovasculares caso essa dor seja assintomática em relação aos demais tipos.
+
+
+# Modelo de Regressão Logística
+
+Primeiramente, começaremos dividindo os nossos dados em grupos de treino e teste. A divisão será feita em $75\%$ para o grupo de treino e os $25\%$ restantes para o grupo de teste. Essa técnica é de extrema importância para a validação das métricas de acurácia obtidas pelo modelo de regressão gerado, por meio de predição nos dados de teste que não foram utilizados para o treinamento do mesmo. Isso se deve pelo fato de que é desejada uma alta acurácia nas predições, porém deve-se confirmar que o modelo não sofreu \emph{overfitting}, isto é, que ele não apenas decorou os dados para os quais foi criado, mas sim aprendeu com eles e é capaz de fazer predições para dados além daqueles usados em treino.
+
+```{r}
+set.seed(148)
+sample <- sample(nrow(dados_knn), size = round(nrow(dados_knn))/4)
+treino <- slice(dados_knn, -sample)
+teste <- slice(dados_knn, sample)
+```
+
+Com os dados divididos em ambos os grupos mencionados, podemos definir o primeiro modelo de regressão. Aqui, será usado o critério de seleção de Akaike (AIC) para eliminarmos variáveis que não apresentam grande correlação com a variável resposta e, portanto, podem estar apenas "inflando" o modelo.
+
+```{r}
+summary(modelo1 <- glm(HeartDisease ~ ., family = binomial, data = treino))
+```
+
+```{r, results='hide'}
+step(modelo1)
+```
+
+```{r}
+summary(modelo1 <- glm(formula = HeartDisease ~ Sex +
+                        ChestPainType + FastingBS + ExerciseAngina +
+                        Oldpeak + ST_Slope, family = binomial, data = treino))
+```
+
+```{r}
+confusion(treino$HeartDisease, modelo1,
+          threshold = 0.5)
+
+confusion(teste$HeartDisease, modelo1,
+          threshold = 0.5, teste = teste)
+```
+
+Assim, tem-se que o primeiro modelo de regressão obtido pelo método AIC contém as variáveis sexo, tipo de dor no peito, glicose em jejum, angina induzida por exercício, oldpeak e inclinação na onda ST. Todas estas já eram esperadas, dada a visualização gráfica obtida anteriormente.
+Ainda, podemos verificar as métricas de acurácia do modelo, constadas acima para ambos os grupos de treino e de teste. O limite assumido para a verificação da matriz de confusão foi o usual $0,5$. Atentando-nos ao grupo de teste, pode-se perceber uma acurácia de $84.28\%$, com sensitividade de $0.7263$ e especificidade de $0.9254$, o que significa que o modelo erra mais assumindo que uma pessoa pode ter uma doença cardiovascular do que assumindo que pode não ter. Esse é um fato muito interessante, visto que isso implica que o modelo tende a acertar $92.54\%$ das vezes que um indivíduo possui uma DCV, o que é um ótimo resultado. Seria um problema muito maior se o modelo errasse em assumir que um indivíduo não possui uma DCV, visto que isso deixaria muitas pessoas doentes passarem despercebidas.
+Agora, faremos o processo de análise de diagnóstico, que consiste em verificar possíveis \emph{outliers} dentre as observações.
+
+```{r, message=FALSE}
+# Distância de Cook e Alavancagem
+cook_modelo1 <- plot_cook(modelo1, treino)
+hat_modelo1 <- plot_hat(modelo1, treino)
+
+plot_grid(cook_modelo1$plot, hat_modelo1$plot)
+
+
+# Resíduos e Gráfico Quantílico (QQ)
+res_modelo1 <- plot_res(modelo1, treino)
+qq_modelo1 <- plot_qq(modelo1)
+
+plot_grid(res_modelo1, qq_modelo1)
+```
+
+A partir dos gráficos de resíduos e quantílico, percebe-se que o modelo está corretamente ajustado em relação a distribuição de probabilidade assumida (binomial). Entretanto, em relação aos gráficos da distância de Cook e alavancagem, percebe-se que algumas observações estão demasiadamente fora dos limites (delimitados pelas linhas pontilhadas) e, por consequência, podem estar interferindo na qualidade da estimação dos parâmetros do modelo, gerando uma piora no compreendimento da influência das variáveis na variável resposta e, por consequência, na qualidade preditiva do mesmo. Dessa forma, algumas observações serão removidas do grupo de treino, em busca de maior qualidade no ajuste do modelo.
+É importante salientar que essa é uma prática iterativa e que deve ser feita levando em consideração algumas métricas (como as métricas de acurácia), e, por consequência, demorada e custosa. Para esses dados não há uma necessidade tão grande desse tipo de ajuste no grupo de treino, visto que menos de $5\%$ dos dados encontram-se fora dos limites, o que é uma quantidade aceitável.
+Nessa iteração, serão removidas as observações $228, 530$ e $643$, que apresentam valores superiores a $1,5$ vezes os limites impostos para ambas as medidas de influência. Após a remoção, faremos novamente a estimação do modelo, passaremos o critério de Akaike para encontrar o modelo "menos inflacionado", checaremos as medidas de acurácia, e então faremos a análise de diagnóstico novamente.
+
+```{r}
+# Remoção de Observações e reestimçaão do modelo
+remove <- plyr::join(cook_modelo1$outliers, hat_modelo1$outliers,
+                     by = "obs", type = "inner")
+treino2 <- slice(treino, -remove$obs)
+
+summary(modelo2 <- glm(HeartDisease ~ ., family = binomial, 
+                       data = treino2))
+```
+
+```{r, results="hide"}
+step(modelo2)
+```
+
+```{r}
+summary(modelo2 <- glm(formula = HeartDisease ~ Age + Sex + ChestPainType + FastingBS + 
+    ExerciseAngina + Oldpeak + ST_Slope, family = binomial, data = treino2))
+```
+
+```{r}
+confusion(treino2$HeartDisease, modelo2,
+          threshold = 0.5)
+
+confusion(teste$HeartDisease, modelo2,
+          threshold = 0.5, teste = teste)
+```
+
+Percebe-se que o modelo mantém-se escolhendo as mesmas variáveis para explicação de doenças cardiovasculares, com a inclusão agora da variável de idade, então as observações tidas como influentes parecem afetar a magnitude de correlação das demais variáveis do banco de dados com a variável resposta.
+Sobre a acurácia, novamente atentaremo-nos aos dados no grupo de teste. Agora, houve um aumento de quase $1.5$ ponto percentual em relação aos acertos e a medida de sensitividade manteve a mesma, com uma melhora de $2$ pontos percentuais na métrica de especificidade. Como dito anteriormente, esses são ótimos resultados e nosso modelo parece muito satisfatório.
+
+Faremos a checagem da análise de diagnóstico a seguir.
+
+```{r}
+# Distância de Cook e Alavancagem
+cook_modelo2 <- plot_cook(modelo2, treino2)
+hat_modelo2 <- plot_hat(modelo2, treino2)
+
+plot_grid(cook_modelo2$plot, hat_modelo2$plot)
+
+
+# Resíduos e Gráfico Quantílico (QQ)
+res_modelo2 <- plot_res(modelo2, treino2)
+qq_modelo2 <- plot_qq(modelo2)
+
+plot_grid(res_modelo2, qq_modelo2)
+```
+
+Esse será o último modelo de regressão ajustado. Outros foram testados, porém nenhum retornou significativas melhoras.
+
+Logo, encontramos o melhor modelo de regressão logística com base nesses dados. Agora, já conhecemos os resultados que esse modelo pode gerar, porém não conhecemos a relação que esse modelo considera entre as variáveis regressoras e a variável resposta. Cada coeficiente associado às variáveis deve passar por uma transformação para que possamos compreender a implicância desses valores para as chances de presença de doenças cardiovasculares em indivíduos. Essa transformação pode ser feita pela função exponencial aplicada aos coeficientes. Logo, temos que,
+
+```{r}
+regressores <- c("Idade", "Sexo Masculino", "Dor no Peito Anginal Atípica", "Dor no Peito Não Anginal",
+                 "Dor no Peito Anginal Típica", "Glicose em Jejum Alta", "Angina Induzida por Exercício",
+                 "Oldpeak", "Segmento ST em Declive", "Segmento ST Plano")
+chances(modelo = modelo2, regressores)
+```
+
+Dessa forma, o modelo nos diz que cada ano de idade implica em $1.03$ vezes mais chances da presença de doenças cardiovasculares; que ser do sexo masculino implica em $5.85$ vezes mais chances de presença de doenças cardiovasculares; que o segmento ST em declive implica em $3.49$ vezes mais chances de doenças que se o segmento ST estivesse em aclive, ou que o segmento ST plano implica em $14.99$ vezes mais chances de doenças que se o segmento ST estivesse em aclive. Todas as outras relações podem ser interpretadas da mesma forma de acordo com os dados da tabela acima.
+
+
+# Conclusões finais
+Neste estudo, um banco de dados criado a partir de amostragem com outros cinco bancos contendo informações sobre preditores para doenças cardiovasculares foi analisado, com o propósito de encontrar um modelo de regressão logística que fosse capaz de inferir sobre a prevalência de doenças cardiovasculares em indivíduos.
+
+O referido modelo de regressão foi considerado bastante eficiente em prever doenças cardiovasculares dadas informações de idade, sexo, se o indivíduo tem experiências de dores no peito, se tem alta glicose, e com a análise do segmento de onda ST em eletrocardiogramas. Ainda, o modelo não demonstrou problemas com importantes fatores como autocorrelação dos preditores ou problemas com resíduos.
+
+Foi concluído, assim, que o modelo de regressão logística encontrado pode ser usado como uma forma prática para interpretar os resultados relacionados aos exames e convertê-los na probabilidade de um indivíduo apresentar algum tipo de doença cardiovascular, sendo assim uma ferramenta simples para contribuir na prevenção e reconhecimento dessas condições.
