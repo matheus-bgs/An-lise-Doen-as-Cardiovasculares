@@ -1,5 +1,5 @@
 ---
-title: "Análise de MLG"
+title: "Análise de Doenças Cardiovasculares"
 author: "Matheus Borges"
 date: "14/02/2022"
 lang: "pt-br"
@@ -430,7 +430,7 @@ regressores <- c("Idade", "Sexo Masculino", "Dor no Peito Anginal Atípica", "Do
 chances(modelo = modelo2, regressores)
 ```
 
-Dessa forma, o modelo nos diz que cada ano de idade implica em $1.03$ vezes mais chances da presença de doenças cardiovasculares; que ser do sexo masculino implica em $5.85$ vezes mais chances de presença de doenças cardiovasculares; que o segmento ST em declive implica em $3.49$ vezes mais chances de doenças que se o segmento ST estivesse em aclive, ou que o segmento ST plano implica em $14.99$ vezes mais chances de doenças que se o segmento ST estivesse em aclive. Todas as outras relações podem ser interpretadas da mesma forma de acordo com os dados da tabela acima.
+Dessa forma, o modelo nos diz que cada ano de idade implica em $1.02$ vezes mais chances da presença de doenças cardiovasculares; que ser do sexo masculino implica em $5.5$ vezes mais chances de presença de doenças cardiovasculares; que o segmento ST em declive implica em $3.32$ vezes mais chances de doenças que se o segmento ST estivesse em aclive, ou que o segmento ST plano implica em $14.47$ vezes mais chances de doenças que se o segmento ST estivesse em aclive. Todas as outras relações podem ser interpretadas da mesma forma de acordo com os dados da tabela acima.
 
 
 # Conclusões finais
